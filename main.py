@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 # ================== CONFIG ==================
 MBOUM_API_KEY = os.getenv("MBOUM_API_KEY")
 
-# Second bot: Option Trader
+# Option Trader bot
 TELEGRAM_BOT_TOKEN = os.getenv("OPTION_TRADER_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("OPTION_TRADER_CHAT_ID")
 
@@ -22,7 +22,7 @@ MARKET_STATUS_INTERVAL = 1800       # 30 min
 
 # thresholds
 MIN_PREMIUM_USD = 50_000            # only alert if premium >= 50k
-MIN_CONFIDENCE_SCORE = 70           # only alert if combined score >= 70
+MIN_CONFIDENCE_SCORE = 60           # lowered so bearish can pass more often
 
 logging.basicConfig(
     level=logging.INFO,
@@ -225,11 +225,11 @@ def build_combined_ml_unusual_message(opt: dict) -> str | None:
     oi = safe_float(opt.get("openInterest"), 0.0)
     vol_oi = safe_float(opt.get("volumeOpenInterestRatio"), 0.0)
     iv = safe_float(opt.get("volatility"), 0.0)
-    order_type = ""  # not provided in unusual; treat as neutral
+    order_type = "SWEEP"  # treat all unusual as sweep-like to boost conviction
     dark_notional = 0.0
 
     last_price = safe_float(opt.get("lastPrice"), 0.0)
-    premium = last_price * vol * 100.0  # midpoint/last-based premium approximation
+    premium = last_price * vol * 100.0  # approximate premium
 
     if premium < MIN_PREMIUM_USD:
         return None
