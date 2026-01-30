@@ -12,7 +12,7 @@ MBOUM_API_KEY = os.getenv("MBOUM_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("OPTION_TRADER_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("OPTION_TRADER_CHAT_ID")
 
-BASE_URL = "https://api.mboum.com/v1"
+BASE_URL = "https://api.mboum.com"
 TIMEZONE = "America/New_York"
 
 # intervals (seconds)
@@ -75,13 +75,19 @@ def ensure_list_of_dicts(data) -> list:
 
 # ================== OPTIONS FETCHERS ==================
 def get_unusual_options_activity() -> list:
-    # /v1/unusual-options-activity
-    data = mboum_get("/unusual-options-activity", {"type": "STOCKS", "page": "1"})
+    # /v1/markets/options/unusual-options-activity
+    data = mboum_get("/v1/markets/options/unusual-options-activity", {
+        "type": "STOCKS",
+        "page": "1"
+    })
     return ensure_list_of_dicts(data) if data is not None else []
 
 def get_options_flow() -> list:
-    # /v1/options-flow
-    data = mboum_get("/options-flow", {})
+    # /v1/markets/options/options-flow
+    data = mboum_get("/v1/markets/options/options-flow", {
+        "type": "STOCKS",
+        "page": "1"
+    })
     return ensure_list_of_dicts(data) if data is not None else []
 
 # ================== HELPERS & ML ENGINE ==================
@@ -167,11 +173,11 @@ def ml_timeframe_score(premium, vol_oi, delta, dte, order_type, direction):
 
 def ml_multi_timeframe_predictions(premium, vol_oi, delta, dte, order_type, direction):
     return {
-        "5m": ml_timeframe_score(premium, vol_oi, delta, dte, order_type, direction),
-        "15m": ml_timeframe_score(premium * 0.9, vol_oi, delta * 0.95, dte, order_type, direction),
-        "30m": ml_timeframe_score(premium * 0.85, vol_oi, delta * 0.9, dte, order_type, direction),
-        "60m": ml_timeframe_score(premium * 0.8, vol_oi, delta * 0.85, dte, order_type, direction),
-        "EOD": ml_timeframe_score(premium * 0.75, vol_oi, delta * 0.8, dte, order_type, direction),
+        "5m": ml_timeframe_score(premium,        vol_oi, delta,        dte, order_type, direction),
+        "15m": ml_timeframe_score(premium*0.9,   vol_oi, delta*0.95,   dte, order_type, direction),
+        "30m": ml_timeframe_score(premium*0.85,  vol_oi, delta*0.9,    dte, order_type, direction),
+        "60m": ml_timeframe_score(premium*0.8,   vol_oi, delta*0.85,   dte, order_type, direction),
+        "EOD": ml_timeframe_score(premium*0.75,  vol_oi, delta*0.8,    dte, order_type, direction),
     }
 
 def ml_ensemble(preds: dict) -> tuple[str, int]:
@@ -234,9 +240,7 @@ def build_combined_ml_unusual_message(opt: dict) -> str | None:
     tf_preds = ml_multi_timeframe_predictions(premium, vol_oi, delta, dte, order_type, direction)
     ensemble_dir, ensemble_score = ml_ensemble(tf_preds)
 
-    # apply dark pool boost to ensemble score if available
     ensemble_score = min(100, ensemble_score + darkpool_boost(dark_notional))
-
     if ensemble_score < MIN_CONFIDENCE_SCORE:
         return None
 
@@ -244,7 +248,6 @@ def build_combined_ml_unusual_message(opt: dict) -> str | None:
     direction_emoji = format_direction_emoji(ensemble_dir)
     confidence_bar = format_confidence_bar(ensemble_score)
     premium_str = format_premium(premium)
-
     now_est = datetime.now(ZoneInfo(TIMEZONE))
 
     lines = []
@@ -297,7 +300,6 @@ def build_smart_money_flow_message(flow: dict) -> str | None:
     if premium < MIN_PREMIUM_USD:
         return None
 
-    # reuse ML scoring
     tf_preds = ml_multi_timeframe_predictions(premium, vol_oi, delta, dte, order_type, direction)
     ensemble_dir, ensemble_score = ml_ensemble(tf_preds)
     ensemble_score = min(100, ensemble_score + darkpool_boost(dark_notional))
