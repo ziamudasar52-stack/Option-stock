@@ -75,7 +75,6 @@ def ensure_list_of_dicts(data) -> list:
 
 # ================== OPTIONS FETCHERS ==================
 def get_unusual_options_activity() -> list:
-    # /v1/markets/options/unusual-options-activity
     data = mboum_get("/v1/markets/options/unusual-options-activity", {
         "type": "STOCKS",
         "page": "1"
@@ -83,7 +82,6 @@ def get_unusual_options_activity() -> list:
     return ensure_list_of_dicts(data) if data is not None else []
 
 def get_options_flow() -> list:
-    # /v1/markets/options/options-flow
     data = mboum_get("/v1/markets/options/options-flow", {
         "type": "STOCKS",
         "page": "1"
@@ -95,9 +93,19 @@ def safe_float(value, default: float = 0.0) -> float:
     try:
         if value is None:
             return default
-        return float(str(value).replace(",", ""))
+        s = str(value).replace(",", "").replace("%", "")
+        return float(s)
     except Exception:
         return default
+
+def parse_premium(value) -> float:
+    if not value:
+        return 0.0
+    s = str(value).replace("$", "").replace(",", "")
+    try:
+        return float(s)
+    except Exception:
+        return 0.0
 
 def classify_direction_from_delta(delta: float) -> str:
     if delta >= 0.3:
@@ -128,7 +136,6 @@ def format_confidence_bar(score: int) -> str:
 def ml_timeframe_score(premium, vol_oi, delta, dte, order_type, direction):
     score = 0
 
-    # premium weight
     if premium >= 1_000_000:
         score += 40
     elif premium >= 250_000:
@@ -136,7 +143,6 @@ def ml_timeframe_score(premium, vol_oi, delta, dte, order_type, direction):
     elif premium >= 50_000:
         score += 20
 
-    # vol/oi weight
     if vol_oi >= 20:
         score += 30
     elif vol_oi >= 10:
@@ -144,7 +150,6 @@ def ml_timeframe_score(premium, vol_oi, delta, dte, order_type, direction):
     elif vol_oi >= 5:
         score += 10
 
-    # delta weight
     if abs(delta) >= 0.9:
         score += 20
     elif abs(delta) >= 0.7:
@@ -152,20 +157,17 @@ def ml_timeframe_score(premium, vol_oi, delta, dte, order_type, direction):
     elif abs(delta) >= 0.5:
         score += 10
 
-    # DTE weight
     if dte <= 1:
         score += 20
     elif dte <= 3:
         score += 10
 
-    # order type weight
     ot = (order_type or "").upper()
     if "SWEEP" in ot:
         score += 15
     if "BLOCK" in ot:
         score += 20
 
-    # direction weight
     if direction in ("BULLISH", "BEARISH"):
         score += 10
 
@@ -197,13 +199,7 @@ def detect_whale(premium, vol_oi, delta, order_type):
     return False
 
 def darkpool_boost(notional):
-    if notional >= 100_000_000:
-        return 30
-    if notional >= 50_000_000:
-        return 20
-    if notional >= 10_000_000:
-        return 10
-    return 0
+    return 0  # Mboum data here has no darkpoolNotional
 
 # ================== UNIQUE ID / DEDUP ==================
 seen_unusual_ids: set[str] = set()
@@ -212,9 +208,9 @@ seen_flow_ids: set[str] = set()
 def get_unique_id_from_record(rec: dict) -> str:
     base = str(rec.get("baseSymbol") or rec.get("symbol") or "")
     strike = str(rec.get("strikePrice") or "")
-    exp = str(rec.get("expirationDate") or "")
+    exp = str(rec.get("expirationDate") or rec.get("expiration") or "")
     premium = str(rec.get("premium") or "")
-    ts = str(rec.get("timestamp") or rec.get("time") or "")
+    ts = str(rec.get("tradeTime") or "")
     return "|".join([base, strike, exp, premium, ts])
 
 # ================== MESSAGE BUILDERS ==================
@@ -225,13 +221,15 @@ def build_combined_ml_unusual_message(opt: dict) -> str | None:
     exp = opt.get("expirationDate")
     dte = safe_float(opt.get("daysToExpiration"), 0.0)
     delta = safe_float(opt.get("delta"), 0.0)
-    premium = safe_float(opt.get("premium"), 0.0)
     vol = safe_float(opt.get("volume"), 0.0)
     oi = safe_float(opt.get("openInterest"), 0.0)
     vol_oi = safe_float(opt.get("volumeOpenInterestRatio"), 0.0)
     iv = safe_float(opt.get("volatility"), 0.0)
-    order_type = opt.get("type") or opt.get("tradeType") or ""
-    dark_notional = safe_float(opt.get("darkpoolNotional"), 0.0)
+    order_type = ""  # not provided in unusual; treat as neutral
+    dark_notional = 0.0
+
+    last_price = safe_float(opt.get("lastPrice"), 0.0)
+    premium = last_price * vol * 100.0  # midpoint/last-based premium approximation
 
     if premium < MIN_PREMIUM_USD:
         return None
@@ -268,11 +266,9 @@ def build_combined_ml_unusual_message(opt: dict) -> str | None:
     lines.append("💰 *Flow Summary:*")
     lines.append(f"💰 Premium: {premium_str}")
     lines.append(f"🎯 Strike: {strike} {symbol_type} | Exp: {exp} (DTE: {dte:.0f})")
-    lines.append(f"Δ: {delta:.2f} | Type: {order_type or 'N/A'}")
+    lines.append(f"Δ: {delta:.2f}")
     lines.append(f"Vol: {vol:,.0f} | OI: {oi:,.0f} | Vol/OI: {vol_oi:.1f}x")
     lines.append(f"IV: {iv:.1f}%")
-    if dark_notional > 0:
-        lines.append(f"🏦 Darkpool Notional: {format_premium(dark_notional)}")
     lines.append("")
     lines.append(f"📈 *Conviction Score:* {ensemble_score}/100")
     lines.append(confidence_bar)
@@ -284,22 +280,29 @@ def build_combined_ml_unusual_message(opt: dict) -> str | None:
 
 def build_smart_money_flow_message(flow: dict) -> str | None:
     base = flow.get("baseSymbol") or flow.get("symbol") or "N/A"
-    direction = (flow.get("direction") or "").upper()  # BULLISH/BEARISH/NEUTRAL
-    premium = safe_float(flow.get("premium"), 0.0)
+    symbol_type = flow.get("symbolType") or "N/A"
+    strike = flow.get("strikePrice")
+    exp = flow.get("expiration")
+    dte = safe_float(flow.get("dte"), 0.0)
+    delta = safe_float(flow.get("delta"), 0.0)
     vol = safe_float(flow.get("volume"), 0.0)
     oi = safe_float(flow.get("openInterest"), 0.0)
-    vol_oi = safe_float(flow.get("volumeOpenInterestRatio"), 0.0)
-    strike = flow.get("strikePrice")
-    exp = flow.get("expirationDate")
-    dte = safe_float(flow.get("daysToExpiration"), 0.0)
-    delta = safe_float(flow.get("delta"), 0.0)
-    order_type = flow.get("type") or flow.get("tradeType") or ""
-    exchange = flow.get("exchange") or "N/A"
-    dark_notional = safe_float(flow.get("darkpoolNotional"), 0.0)
+    iv = safe_float(flow.get("volatility"), 0.0)
+    premium = parse_premium(flow.get("premium"))
+    trade_price = safe_float(flow.get("tradePrice"), 0.0)
+    trade_size = safe_float(flow.get("tradeSize"), 0.0)
+    order_type = flow.get("tradeCondition") or flow.get("label") or flow.get("side") or ""
+    exchange = flow.get("expirationType") or "N/A"
+    dark_notional = 0.0
+
+    vol_oi = 0.0
+    if oi > 0:
+        vol_oi = vol / oi
 
     if premium < MIN_PREMIUM_USD:
         return None
 
+    direction = classify_direction_from_delta(delta)
     tf_preds = ml_multi_timeframe_predictions(premium, vol_oi, delta, dte, order_type, direction)
     ensemble_dir, ensemble_score = ml_ensemble(tf_preds)
     ensemble_score = min(100, ensemble_score + darkpool_boost(dark_notional))
@@ -316,14 +319,14 @@ def build_smart_money_flow_message(flow: dict) -> str | None:
     lines.append(f"{direction_emoji} *SMART MONEY FLOW - {ensemble_dir}* {direction_emoji}")
     lines.append("🎯 *UNUSUAL CONVICTION*")
     lines.append("")
-    lines.append(f"*{base} {strike} {exp}*")
+    lines.append(f"*{base} {strike} {symbol_type}*")
     lines.append(f"💲 Premium: {premium_str}")
     lines.append(f"📅 Exp: {exp} (DTE: {dte:.0f})")
     lines.append("")
-    lines.append(f"📍 Δ: {delta:.3f} | Type: {order_type or 'N/A'} | Exch: {exchange}")
+    lines.append(f"📍 Δ: {delta:.4f} | Type: {order_type or 'N/A'} | Exch: {exchange}")
     lines.append(f"📈 Vol: {vol:,.0f} | OI: {oi:,.0f} ({vol_oi:.1f}x)")
-    if dark_notional > 0:
-        lines.append(f"🏦 Darkpool Notional: {format_premium(dark_notional)}")
+    lines.append(f"💵 Trade: {trade_price:.2f} x {trade_size:,.0f}")
+    lines.append(f"IV: {iv:.2f}%")
     lines.append("")
     lines.append(f"📊 *Conviction Score:* {ensemble_score}/100")
     lines.append(confidence_bar)
