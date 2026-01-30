@@ -173,11 +173,11 @@ def ml_timeframe_score(premium, vol_oi, delta, dte, order_type, direction):
 
 def ml_multi_timeframe_predictions(premium, vol_oi, delta, dte, order_type, direction):
     return {
-        "5m": ml_timeframe_score(premium,        vol_oi, delta,        dte, order_type, direction),
-        "15m": ml_timeframe_score(premium*0.9,   vol_oi, delta*0.95,   dte, order_type, direction),
-        "30m": ml_timeframe_score(premium*0.85,  vol_oi, delta*0.9,    dte, order_type, direction),
-        "60m": ml_timeframe_score(premium*0.8,   vol_oi, delta*0.85,   dte, order_type, direction),
-        "EOD": ml_timeframe_score(premium*0.75,  vol_oi, delta*0.8,    dte, order_type, direction),
+        "5m":  ml_timeframe_score(premium,       vol_oi, delta,       dte, order_type, direction),
+        "15m": ml_timeframe_score(premium*0.9,   vol_oi, delta*0.95,  dte, order_type, direction),
+        "30m": ml_timeframe_score(premium*0.85,  vol_oi, delta*0.9,   dte, order_type, direction),
+        "60m": ml_timeframe_score(premium*0.8,   vol_oi, delta*0.85,  dte, order_type, direction),
+        "EOD": ml_timeframe_score(premium*0.75,  vol_oi, delta*0.8,   dte, order_type, direction),
     }
 
 def ml_ensemble(preds: dict) -> tuple[str, int]:
@@ -340,7 +340,12 @@ def run_unusual_options_task() -> None:
     logging.info("🔍 UNUSUAL OPTIONS TASK...")
     records = get_unusual_options_activity()
     if not records:
+        logging.info("Unusual options: no records returned")
         return
+
+    logging.info(f"Unusual options count: {len(records)}")
+    logging.info(f"Unusual sample record: {records[0]}")
+
     for rec in records:
         uid = get_unique_id_from_record(rec)
         if uid in seen_unusual_ids:
@@ -354,7 +359,12 @@ def run_options_flow_task() -> None:
     logging.info("🔍 OPTIONS FLOW TASK...")
     records = get_options_flow()
     if not records:
+        logging.info("Options flow: no records returned")
         return
+
+    logging.info(f"Options flow count: {len(records)}")
+    logging.info(f"Options flow sample record: {records[0]}")
+
     for rec in records:
         uid = get_unique_id_from_record(rec)
         if uid in seen_flow_ids:
